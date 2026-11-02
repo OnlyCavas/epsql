@@ -1,0 +1,59 @@
+* epsql
+
+SQL, shortened. epsql is a PostgreSQL client with its own compact query language that compiles to real SQL, plus a REPL with syntax highlighting and better usability. Written in OCaml, it speaks the wire protocol directly.
+
+** Example
+
+#+begin_src
+λ st users get name w age >= 20 o name desc l 2
+#+end_src
+
+The same query, spelled out:
+
+#+begin_src
+λ select table users get name where age >= 20 order name desc limit 2
+#+end_src
+
+Both compile to:
+
+#+begin_src
+SELECT "name" FROM "users" WHERE "age" >= 20 ORDER BY "name" DESC LIMIT 2
+#+end_src
+
+** Install
+
+Requires OCaml and dune.
+
+#+begin_src sh
+git clone https://github.com/OnlyCavas/epsql
+cd epsql
+make clean install
+#+end_src
+
+** Usage
+
+#+begin_src sh
+epsql
+epsql st users
+epsql @staging st users
+#+end_src
+
+Inside the REPL, commands start with =@=: =@use dbname= switches
+database, and =@help= lists the rest.
+
+** Configuration
+
+Profiles live in =~/.epsql/config=, in an ssh-like format. The first
+value found for each key wins, so put specific hosts first and =Host *=
+defaults last.
+
+#+begin_example
+Host staging
+    HostName db.example.com
+    User diogo
+    Database app
+
+Host *
+    Port 5432
+    User postgres
+#+end_example
