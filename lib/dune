@@ -1,0 +1,5 @@
+; (include_subdirs qualified)
+
+(library
+ (name epsql)
+ (libraries epsql_syntax epsql_wire))

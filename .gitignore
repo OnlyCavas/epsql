@@ -1,0 +1,27 @@
+# dune / OCaml build output
+_build/
+*.install
+.merlin
+
+# local opam switch
+_opam/
+
+# editors and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# environment and secrets
+.env
+.env.*
+
+# local config with connection details or passwords
+assets/config
+config.local
+
+# profiling / debugging leftovers
+*.log
+perf.data*

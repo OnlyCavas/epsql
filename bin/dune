@@ -1,0 +1,4 @@
+(executable
+ (public_name epsql)
+ (name main)
+ (libraries epsql unix))

@@ -1,0 +1,3 @@
+(library
+ (name epsql_wire)
+ (libraries unix))
