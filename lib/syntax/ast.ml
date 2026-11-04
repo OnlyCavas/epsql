@@ -39,7 +39,7 @@ and rhs =
   | Sub of { card : cardinality; query : query }
   | Null
 
-and order = { column : string; dir : [ `Asc | `Desc ] }
+and order = { column : expr; dir : [ `Asc | `Desc ] }
 and select_item = { expr : expr; alias : string option }
 and table_ref = { table : string; alias : string option }
 
@@ -115,7 +115,7 @@ let rec show_expr = function
         (wrap (expr_prec b <= p) b)
 
 let show_order { column; dir } =
-  Printf.sprintf "order column %s by %s" column
+  Printf.sprintf "order column %s by %s" (show_expr column)
     (match dir with `Asc -> "asc" | `Desc -> "desc")
 
 let show_limit limit = Printf.sprintf "limited by %s" (string_of_int limit)

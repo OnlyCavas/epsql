@@ -68,7 +68,7 @@ module MAKE (D : DIALECT) = struct
     let o =
       Option.map
         (fun { column; dir } ->
-          Printf.sprintf " ORDER BY %s %s" (D.quote_ident column)
+          Printf.sprintf " ORDER BY %s %s" (expression ctx column)
             (match dir with `Asc -> "ASC" | `Desc -> "DESC"))
         order
     in

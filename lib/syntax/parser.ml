@@ -520,7 +520,7 @@ let card_of_op : op -> cardinality = function
   | In -> Many
 
 let parse_order toks =
-  let column, toks = parse_name Column toks in
+  let column, toks = parse_expr toks in
   let dir, toks =
     match toks with
     | ({ tok = Ident s; _ } as t) :: rest -> (
