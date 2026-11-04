@@ -49,6 +49,7 @@ module Keyword = struct
     | Limit
     | In
     | Set
+    | As
     | Asc
     | Desc
     | Or
@@ -87,6 +88,7 @@ module Keyword = struct
       ("l", Limit);
       ("in", In);
       ("set", Set);
+      ("as", As);
       ("asc", Asc);
       ("desc", Desc);
       ("null", Null);
@@ -336,6 +338,18 @@ let expand_cluster = function
 let expand_head toks =
   match expand_cluster toks with Some toks -> toks | None -> toks
 
+let is_keyword (keywords : Keyword.t list) = function
+  | { tok = Ident s; _ } ->
+      Keyword.of_string s
+      |> Option.fold ~none:false ~some:(fun k -> List.mem k keywords)
+  | _ -> false
+
+let expect_keyword expected = function
+  | token :: rest when is_keyword [ expected ] token ->
+      mark token Command;
+      rest
+  | toks -> fail toks "expected %s" (Keyword.to_string expected)
+
 let parse_name role = function
   | ({ tok = Ident s; _ } as t) :: rest ->
       mark t role;
@@ -434,10 +448,45 @@ and parse_factorial : spec list -> expr * spec list = function
       (Column name, rest)
   | toks -> fail toks "failed to parse factorial operation"
 
+let parse_select_item toks =
+  let expr, rest = parse_expr toks in
+  match rest with
+  | { tok = Ident s } :: rest as toks ->
+      let rest = expect_keyword As toks in
+      let alias, rest = parse_name Column rest in
+      ({ expr; alias = Some alias }, rest)
+  | _ -> ({ expr; alias = None }, rest)
+
+let parse_target = function
+  | ({ tok = Ident word; start; stop } as t) :: rest -> (
+      let finish mk =
+        mark t Target;
+        let name, rest = parse_name Name rest in
+        (mk name, rest)
+      in
+      match word |> Keyword.of_string with
+      | Some Table -> finish (fun name -> Table name)
+      | Some Database -> finish (fun name -> Database name)
+      | _ -> fail_at (start, stop) "expected table or database, got %s" word)
+  | toks -> fail toks "expected table or database"
+
+let parse_target_ref toks =
+  let table, rest =
+    match parse_target toks with
+    | Table table, rest -> (table, rest)
+    | _, rest -> fail rest "expected an table"
+  in
+  match rest with
+  | { tok = Ident s } :: rest as toks ->
+      let rest = expect_keyword As toks in
+      let alias, rest = parse_name Column rest in
+      ({ table; alias = Some alias }, rest)
+  | _ -> ({ table; alias = None }, rest)
+
 let parse_columns toks = parse_tuple_of ~what:"column" parse_column toks
 let parse_exprs toks = parse_tuple_of ~what:"expression" parse_expr toks
 let parse_values toks = parse_tuple_of ~what:"value" parse_value toks
-let parse_get toks = parse_tuple_of ~what:"get" parse_expr toks
+let parse_get toks = parse_tuple_of ~what:"get" parse_select_item toks
 
 let parse_field role parse_item toks =
   let key, toks = parse_name role toks in
@@ -456,34 +505,9 @@ let rec parse_fields role parse_item toks =
       (field :: fields, toks)
   | _ -> ([], toks)
 
-let parse_target = function
-  | ({ tok = Ident word; start; stop } as t) :: rest -> (
-      let finish mk =
-        mark t Target;
-        let name, rest = parse_name Name rest in
-        (mk name, rest)
-      in
-      match word |> Keyword.of_string with
-      | Some Table -> finish (fun name -> Table name)
-      | Some Database -> finish (fun name -> Database name)
-      | _ -> fail_at (start, stop) "expected table or database, got %s" word)
-  | toks -> fail toks "expected table or database"
-
 let expect_end = function
   | [] | [ { tok = Eof; _ } ] -> ()
   | { start; stop } :: _ -> fail_at (start, stop) "unexpected trailing input"
-
-let is_keyword (keywords : Keyword.t list) = function
-  | { tok = Ident s; _ } ->
-      Keyword.of_string s
-      |> Option.fold ~none:false ~some:(fun k -> List.mem k keywords)
-  | _ -> false
-
-let expect_keyword expected = function
-  | token :: rest when is_keyword [ expected ] token ->
-      mark token Command;
-      rest
-  | toks -> fail toks "expected %s" (Keyword.to_string expected)
 
 let parse_op : spec list -> op * spec list = function
   | ({ tok = Op op; _ } as t) :: rest ->
@@ -605,16 +629,17 @@ and parse_query table toks =
   loop (empty_state ()) toks
 
 and parse_subquery toks =
-  let tok_pos = span_of toks in
+  (* let tok_pos = span_of toks in *)
   let rest = expect_token L_paren toks in
   let rest = expand_head rest in
   let rest = expect_keyword Select rest in
-  let table, rest =
-    match parse_target rest with
-    | Table table, rest -> (table, rest)
-    | Database _, _ ->
-        fail_at tok_pos "expected a table select rather than a database select"
-  in
+  let table, rest = parse_target_ref rest in
+  (* let table, rest = *)
+  (*   match parse_target rest with *)
+  (*   | Table table, rest -> (table, rest) *)
+  (*   | Database _, _ -> *)
+  (*       fail_at tok_pos "expected a table select rather than a database select" *)
+  (* in *)
   let query, rest = parse_query table rest in
   (query, expect_token R_paren rest)
 
@@ -669,7 +694,8 @@ and parse_where toks =
 
 let parse_select toks =
   match parse_target toks with
-  | Table table, rest ->
+  | Table _, _ ->
+      let table, rest = parse_target_ref toks in
       let query, _ = parse_query table rest in
       Select_table query
   | Database db, rest ->

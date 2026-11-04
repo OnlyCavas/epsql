@@ -61,9 +61,9 @@ module MAKE (D : DIALECT) = struct
     let cols =
       match get with
       | [] -> "*"
-      | entries -> String.concat ", " (List.map (expr ctx) entries)
+      | entries -> String.concat ", " (List.map (select_item ctx) entries)
     in
-    let base = Printf.sprintf "SELECT %s FROM %s" cols (D.quote_ident table) in
+    let base = Printf.sprintf "SELECT %s FROM %s" cols (target_ref table) in
     let w = Option.map (fun cond -> " WHERE " ^ condition ctx cond) where in
     let o =
       Option.map
@@ -76,18 +76,26 @@ module MAKE (D : DIALECT) = struct
     base ^ Option.value w ~default:"" ^ Option.value o ~default:""
     ^ Option.value l ~default:""
 
-  and expr ctx = function
+  and alias name = " AS " ^ D.quote_ident name
+
+  and target_ref tr =
+    (tr.table |> D.quote_ident) ^ Option.fold tr.alias ~none:"" ~some:alias
+
+  and select_item ctx si =
+    expression ctx si.expr ^ Option.fold si.alias ~none:"" ~some:alias
+
+  and expression ctx = function
     | Literal v -> bind ctx v
     | Column col -> D.quote_ident col
-    | Neg ex -> Printf.sprintf "-(%s)" (expr ctx ex)
+    | Neg ex -> Printf.sprintf "-(%s)" (expression ctx ex)
     | Arith (op, lhs, rhs) ->
-        let lhs = expr ctx lhs in
-        let rhs = expr ctx rhs in
+        let lhs = expression ctx lhs in
+        let rhs = expression ctx rhs in
         Printf.sprintf "(%s %s %s)" lhs (op |> arith_op) rhs
 
   and condition ctx = function
     | Cmp { columns; op; rhs } -> (
-        let lhs = tuple (List.map (expr ctx) columns) in
+        let lhs = tuple (List.map (expression ctx) columns) in
         match rhs with
         | Null -> (
             match op with

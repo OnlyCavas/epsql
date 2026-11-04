@@ -40,10 +40,12 @@ and rhs =
   | Null
 
 and order = { column : string; dir : [ `Asc | `Desc ] }
+and select_item = { expr : expr; alias : string option }
+and table_ref = { table : string; alias : string option }
 
 and query = {
-  table : string;
-  get : expr list;
+  table : table_ref;
+  get : select_item list;
   where : condition option;
   order : order option;
   limit : int option;
@@ -141,7 +143,7 @@ let show_card : cardinality -> string = function
 
 let rec show_query { table; get; where; order; limit } =
   [
-    Some (Printf.sprintf "select table %s" table);
+    Some (Printf.sprintf "select table %s" (show_target_ref table));
     show_get get;
     Option.map (fun c -> "where " ^ show_condition c) where;
     Option.map show_order order;
@@ -168,12 +170,18 @@ and show_rhs = function
       let show_row row = show_tuple (List.map show_value row) in
       "(" ^ String.concat ", " (List.map show_row rows) ^ ")"
 
+and show_alias show_item alias =
+  match alias with Some a -> show_item ^ " as " ^ a | None -> show_item
+
+and show_select_item item = show_alias (show_expr item.expr) item.alias
+and show_target_ref item = show_alias item.table item.alias
+
 and show_get = function
   | [] -> None
   | cols ->
       Some
         (Printf.sprintf "get (%s)"
-           (String.concat ", " (List.map show_expr cols)))
+           (String.concat ", " (List.map show_select_item cols)))
 
 let string_of_command = function
   | Drop _ -> "drop"
