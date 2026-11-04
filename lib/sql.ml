@@ -84,9 +84,14 @@ module MAKE (D : DIALECT) = struct
   and select_item ctx si =
     expression ctx si.expr ^ Option.fold si.alias ~none:"" ~some:alias
 
+  and column_ref = function
+    | { qualifier = Some q; name } ->
+        Printf.sprintf "%s.%s" (q |> D.quote_ident) (name |> D.quote_ident)
+    | { qualifier = None; name } -> name |> D.quote_ident
+
   and expression ctx = function
     | Literal v -> bind ctx v
-    | Column col -> D.quote_ident col
+    | Column col -> col |> column_ref
     | Neg ex -> Printf.sprintf "-(%s)" (expression ctx ex)
     | Arith (op, lhs, rhs) ->
         let lhs = expression ctx lhs in

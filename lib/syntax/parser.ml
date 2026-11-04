@@ -144,6 +144,7 @@ type token =
   | Semicolon
   | L_paren
   | R_paren
+  | Dot
   | Arith_Op of Ast.arith_op
   | Op of Ast.op
   | Eof
@@ -159,6 +160,7 @@ let string_of_token = function
   | R_paren -> "right parent"
   | Arith_Op _ -> "arith op"
   | Semicolon -> "Semicolon"
+  | Dot -> "dot"
   | Op _ -> "Op"
   | Eof -> "Eof"
   | Error -> "Error"
@@ -264,6 +266,7 @@ let tokenizer str =
     | Some '/' -> emit (Arith_Op Div) (i + 1)
     | Some '%' -> emit (Arith_Op Mod) (i + 1)
     | Some ')' -> emit R_paren (i + 1)
+    | Some '.' -> emit Dot (i + 1)
     | Some '=' -> emit (Op Eq) (i + 1)
     | Some '!' when peek (i + 1) = Some '=' -> emit (Op Neq) (i + 2)
     | Some '>' when peek (i + 1) = Some '=' -> emit (Op Gte) (i + 2)
@@ -376,10 +379,18 @@ let parse_tuple_of ~what parse_item toks =
       let item, rest = parse_item toks in
       ([ item ], rest)
 
-and parse_column = function
+and parse_column_ref = function
+  | ({ tok = Ident table } as t)
+    :: ({ tok = Dot } as p)
+    :: ({ tok = Ident col } as c)
+    :: rest ->
+      mark t Name;
+      mark p Punct;
+      mark c Column;
+      ({ qualifier = Some table; name = col }, rest)
   | ({ tok = Ident s; _ } as t) :: rest ->
       mark t Column;
-      (s, rest)
+      ({ qualifier = None; name = s }, rest)
   | toks -> fail toks "expected a column name"
 
 and parse_value = function
@@ -444,8 +455,8 @@ and parse_factorial : spec list -> expr * spec list = function
       mark t Literal;
       (Literal (String s), rest)
   | { tok = Ident _; _ } :: _ as toks ->
-      let name, rest = parse_column toks in
-      (Column name, rest)
+      let col_ref, rest = parse_column_ref toks in
+      (Column col_ref, rest)
   | toks -> fail toks "failed to parse factorial operation"
 
 let parse_select_item toks =
@@ -453,7 +464,7 @@ let parse_select_item toks =
   match rest with
   | { tok = Ident s } :: rest as toks ->
       let rest = expect_keyword As toks in
-      let alias, rest = parse_name Column rest in
+      let alias, rest = parse_name Name rest in
       ({ expr; alias = Some alias }, rest)
   | _ -> ({ expr; alias = None }, rest)
 
@@ -479,11 +490,11 @@ let parse_target_ref toks =
   match rest with
   | ({ tok = Ident s } as t) :: rest when Keyword.of_string s = Some As ->
       mark t Command;
-      let alias, rest = parse_name Column rest in
+      let alias, rest = parse_name Name rest in
       ({ table; alias = Some alias }, rest)
   | _ -> ({ table; alias = None }, rest)
 
-let parse_columns toks = parse_tuple_of ~what:"column" parse_column toks
+let parse_columns toks = parse_tuple_of ~what:"column" parse_column_ref toks
 let parse_exprs toks = parse_tuple_of ~what:"expression" parse_expr toks
 let parse_values toks = parse_tuple_of ~what:"value" parse_value toks
 let parse_get toks = parse_tuple_of ~what:"get" parse_select_item toks

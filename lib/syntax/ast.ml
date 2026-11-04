@@ -23,9 +23,12 @@ type op = Eq | Neq | Lt | Gt | Lte | Gte | Like | Is | In
 
 type expr =
   | Literal of value
-  | Column of string
+  | Column of column_ref
   | Neg of expr
   | Arith of arith_op * expr * expr
+
+and select_item = { expr : expr; alias : string option }
+and column_ref = { qualifier : string option; name : string }
 
 type condition =
   | Cmp of { columns : expr list; op : op; rhs : rhs }
@@ -40,7 +43,6 @@ and rhs =
   | Null
 
 and order = { column : expr; dir : [ `Asc | `Desc ] }
-and select_item = { expr : expr; alias : string option }
 and table_ref = { table : string; alias : string option }
 
 and query = {
@@ -98,10 +100,14 @@ let show_arith_op = function
 let arith_prec = function Add | Sub -> 1 | Mul | Div | Mod -> 2
 let expr_prec = function Arith (op, _, _) -> arith_prec op | _ -> 3
 
+let show_column_ref = function
+  | { qualifier = Some q; name } -> q ^ "." ^ name
+  | { qualifier = None; name } -> name
+
 let rec show_expr = function
   | Literal (Int i) -> string_of_int i
   | Literal (String s) -> Printf.sprintf "'%s'" s
-  | Column c -> c
+  | Column c -> c |> show_column_ref
   | Neg ((Arith _ | Neg _) as e) -> Printf.sprintf "-(%s)" (show_expr e)
   | Neg e -> "-" ^ show_expr e
   | Arith (op, a, b) ->
