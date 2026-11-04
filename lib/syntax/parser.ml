@@ -477,8 +477,8 @@ let parse_target_ref toks =
     | _, rest -> fail rest "expected an table"
   in
   match rest with
-  | { tok = Ident s } :: rest as toks ->
-      let rest = expect_keyword As toks in
+  | ({ tok = Ident s } as t) :: rest when Keyword.of_string s = Some As ->
+      mark t Command;
       let alias, rest = parse_name Column rest in
       ({ table; alias = Some alias }, rest)
   | _ -> ({ table; alias = None }, rest)
