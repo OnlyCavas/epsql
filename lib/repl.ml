@@ -253,7 +253,7 @@ let param_of_value : Ast.value -> string option = function
   | String s -> Some s
   | Int i -> Some (string_of_int i)
 
-let execute (stmt : Sql.stmt) c =
+let execute_sql (stmt : Sql.stmt) c =
   match stmt.params with
   | [] -> Connection.send_sql c stmt.sql
   | params -> Connection.send_stmt c stmt.sql (List.map param_of_value params)
@@ -264,6 +264,10 @@ type state = {
   connection : Wire.t;
   config : Config.t;
 }
+
+let execute (stmt : Sql.stmt) { connection; debug } =
+  if debug then stmt.sql |> print_endline;
+  execute_sql stmt connection
 
 let switch_database state database =
   let config = { state.config with Config.database } in
@@ -312,7 +316,7 @@ let rec run state =
           (match Parser.parse input with
           | Ok cmd ->
               let stmt = SqlDilect.to_stmt cmd in
-              execute stmt state.connection;
+              execute stmt state;
               Connection.read_results state.connection
           | Error msg ->
               msg |> print_endline;

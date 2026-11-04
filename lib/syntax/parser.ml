@@ -4,6 +4,12 @@ type t =
   | Lexer_error of { pos : int; msg : string }
   | Parser_error of { start : int; stop : int; msg : string }
 
+module Arith = struct
+  let all = [ ("mod", Mod) ]
+  let of_string op = List.assoc_opt (String.lowercase_ascii op) all
+  let is_arith op = Option.is_some @@ of_string op
+end
+
 module Operator = struct
   let all =
     [
@@ -136,6 +142,7 @@ type token =
   | Semicolon
   | L_paren
   | R_paren
+  | Arith_Op of Ast.arith_op
   | Op of Ast.op
   | Eof
   | Error
@@ -148,6 +155,7 @@ let string_of_token = function
   | Comma -> "Comma"
   | L_paren -> "left parent"
   | R_paren -> "right parent"
+  | Arith_Op _ -> "arith op"
   | Semicolon -> "Semicolon"
   | Op _ -> "Op"
   | Eof -> "Eof"
@@ -200,6 +208,17 @@ let format_error input ~start ~stop msg =
   let underline = "^" ^ String.make (width - 1) '~' in
   Printf.sprintf "%s\n%s\n%s%s" (bold_red msg) input padding (red underline)
 
+let keyword_lookups : (string -> token option) list =
+  [
+    (fun s -> Option.map (fun o -> Arith_Op o) (Arith.of_string s));
+    (fun s -> Option.map (fun o -> Op o) (Operator.of_string s));
+  ]
+
+let classify_keyword id =
+  match List.find_map (fun f -> f id) keyword_lookups with
+  | Some tok -> tok
+  | None -> Ident id
+
 let tokenizer str =
   let n = String.length str in
   let peek pos = if pos < n then Some str.[pos] else None in
@@ -237,6 +256,11 @@ let tokenizer str =
     | Some ',' -> emit Comma (i + 1)
     | Some ';' -> emit Semicolon (i + 1)
     | Some '(' -> emit L_paren (i + 1)
+    | Some '-' -> emit (Arith_Op Sub) (i + 1)
+    | Some '+' -> emit (Arith_Op Add) (i + 1)
+    | Some '*' -> emit (Arith_Op Mul) (i + 1)
+    | Some '/' -> emit (Arith_Op Div) (i + 1)
+    | Some '%' -> emit (Arith_Op Mod) (i + 1)
     | Some ')' -> emit R_paren (i + 1)
     | Some '=' -> emit (Op Eq) (i + 1)
     | Some '!' when peek (i + 1) = Some '=' -> emit (Op Neq) (i + 2)
@@ -249,7 +273,7 @@ let tokenizer str =
         emit (String str) next
     | Some ch when is_ident_start ch ->
         let id, next = take_while is_ident_char i in
-        emit (Ident id) next
+        emit (classify_keyword id) next
     | Some c when is_digit c ->
         let digits, next = take_while is_digit i in
         emit (Int (int_of_string digits)) next
@@ -362,9 +386,58 @@ let parse_type = function
       | None -> fail_at (start, stop) "unknown type %s" s)
   | toks -> fail toks "expected a type"
 
+let parse_arith_op = function
+  | ({ tok = Arith_Op op; _ } as t) :: rest ->
+      mark t Punct;
+      (op, rest)
+  | toks -> fail toks "expected an math operator"
+
+let rec parse_expr toks =
+  let lhs, rest = parse_term toks in
+  parse_expr_rest lhs rest
+
+and parse_expr_rest lhs = function
+  | ({ tok = Arith_Op ((Add | Sub) as op) } as t) :: rest ->
+      mark t Punct;
+      let rhs, rest = parse_term rest in
+      parse_term_rest (Arith (op, lhs, rhs)) rest
+  | toks -> (lhs, toks)
+
+and parse_term toks =
+  let lhs, rest = parse_factorial toks in
+  parse_term_rest lhs rest
+
+and parse_term_rest lhs = function
+  | ({ tok = Arith_Op ((Div | Mul | Mod) as op) } as t) :: rest ->
+      mark t Punct;
+      let rhs, rest = parse_factorial rest in
+      parse_term_rest (Arith (op, lhs, rhs)) rest
+  | toks -> (lhs, toks)
+
+and parse_factorial : spec list -> expr * spec list = function
+  | ({ tok = Arith_Op Sub } as t) :: rest ->
+      mark t Punct;
+      let fact, rest = parse_factorial rest in
+      (Neg fact, rest)
+  | ({ tok = Arith_Op Add } as t) :: rest ->
+      mark t Punct;
+      let fact, rest = parse_factorial rest in
+      (fact, rest)
+  | ({ tok = Int i } as t) :: rest ->
+      mark t Number;
+      (Literal (Int i), rest)
+  | ({ tok = String s } as t) :: rest ->
+      mark t Literal;
+      (Literal (String s), rest)
+  | { tok = Ident _; _ } :: _ as toks ->
+      let name, rest = parse_column toks in
+      (Column name, rest)
+  | toks -> fail toks "failed to parse factorial operation"
+
 let parse_columns toks = parse_tuple_of ~what:"column" parse_column toks
+let parse_exprs toks = parse_tuple_of ~what:"expression" parse_expr toks
 let parse_values toks = parse_tuple_of ~what:"value" parse_value toks
-let parse_get toks = parse_tuple_of ~what:"get" parse_column toks
+let parse_get toks = parse_tuple_of ~what:"get" parse_expr toks
 
 let parse_field role parse_item toks =
   let key, toks = parse_name role toks in
@@ -416,12 +489,6 @@ let parse_op : spec list -> op * spec list = function
   | ({ tok = Op op; _ } as t) :: rest ->
       mark t Operator;
       (op, rest)
-  | ({ tok = Ident op; start; stop } as t) :: rest -> (
-      match op |> Operator.of_string with
-      | Some op ->
-          mark t Operator;
-          (op, rest)
-      | None -> fail_at (start, stop) "unknown operator, %s" op)
   | toks -> fail toks "expected an operator"
 
 let card_of_op : op -> cardinality = function
@@ -593,7 +660,7 @@ and parse_in ~ncols toks =
         (Rows rows, rest))
 
 and parse_where toks =
-  let columns, toks = parse_columns toks in
+  let columns, toks = parse_exprs toks in
   let op, toks = parse_op toks in
   let rhs_pos = span_of toks in
   let rhs, toks = parse_rhs ~ncols:(List.length columns) op toks in
@@ -693,6 +760,6 @@ let parse input : (command, string) result =
     Ok (parse_command toks)
   with
   | Syntax_error (Lexer_error { pos; msg }) ->
-      Result.error (format_error input ~start:pos ~stop:(pos + 1) msg)
+      Error (format_error input ~start:pos ~stop:(pos + 1) msg)
   | Syntax_error (Parser_error { start; stop; msg }) ->
-      Result.error (format_error input ~start ~stop msg)
+      Error (format_error input ~start ~stop msg)

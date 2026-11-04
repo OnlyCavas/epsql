@@ -16,12 +16,19 @@ module Types = struct
   let is_type str = Option.is_some @@ of_string str
 end
 
+type arith_op = Add | Sub | Mul | Div | Mod
 type value = String of string | Int of int
 type cardinality = One | Maybe | Many
 type op = Eq | Neq | Lt | Gt | Lte | Gte | Like | Is | In
 
+type expr =
+  | Literal of value
+  | Column of string
+  | Neg of expr
+  | Arith of arith_op * expr * expr
+
 type condition =
-  | Cmp of { columns : string list; op : op; rhs : rhs }
+  | Cmp of { columns : expr list; op : op; rhs : rhs }
   | And of condition * condition
   | Or of condition * condition
   | Not of condition
@@ -36,7 +43,7 @@ and order = { column : string; dir : [ `Asc | `Desc ] }
 
 and query = {
   table : string;
-  get : string list;
+  get : expr list;
   where : condition option;
   order : order option;
   limit : int option;
@@ -79,6 +86,32 @@ let show_op = function
   | Is -> "is"
   | In -> "in"
 
+let show_arith_op = function
+  | Add -> "+"
+  | Sub -> "-"
+  | Mul -> "*"
+  | Div -> "/"
+  | Mod -> "%"
+
+let arith_prec = function Add | Sub -> 1 | Mul | Div | Mod -> 2
+let expr_prec = function Arith (op, _, _) -> arith_prec op | _ -> 3
+
+let rec show_expr = function
+  | Literal (Int i) -> string_of_int i
+  | Literal (String s) -> Printf.sprintf "'%s'" s
+  | Column c -> c
+  | Neg ((Arith _ | Neg _) as e) -> Printf.sprintf "-(%s)" (show_expr e)
+  | Neg e -> "-" ^ show_expr e
+  | Arith (op, a, b) ->
+      let p = arith_prec op in
+      let wrap needs e =
+        if needs then Printf.sprintf "(%s)" (show_expr e) else show_expr e
+      in
+      Printf.sprintf "%s %s %s"
+        (wrap (expr_prec a < p) a)
+        (show_arith_op op)
+        (wrap (expr_prec b <= p) b)
+
 let show_order { column; dir } =
   Printf.sprintf "order column %s by %s" column
     (match dir with `Asc -> "asc" | `Desc -> "desc")
@@ -118,8 +151,9 @@ let rec show_query { table; get; where; order; limit } =
 
 and show_condition = function
   | Cmp { columns; op; rhs } ->
-      Printf.sprintf "column %s %s %s" (show_tuple columns) (show_op_phrase op)
-        (show_rhs rhs)
+      Printf.sprintf "column %s %s %s"
+        (show_tuple (List.map show_expr columns))
+        (show_op_phrase op) (show_rhs rhs)
   | And (a, b) ->
       Printf.sprintf "%s and %s" (show_condition a) (show_condition b)
   | Or (a, b) -> Printf.sprintf "%s or %s" (show_condition a) (show_condition b)
@@ -136,7 +170,10 @@ and show_rhs = function
 
 and show_get = function
   | [] -> None
-  | cols -> Some (Printf.sprintf "get (%s)" (String.concat ", " cols))
+  | cols ->
+      Some
+        (Printf.sprintf "get (%s)"
+           (String.concat ", " (List.map show_expr cols)))
 
 let string_of_command = function
   | Drop _ -> "drop"

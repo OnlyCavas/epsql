@@ -3,6 +3,8 @@ open Epsql
 open Epsql_wire
 module SqlDialect = Sql.MAKE (Sql.Postgres)
 
+let or_fail = function Ok x -> x | Error msg -> failwith msg
+
 let read_file path =
   let ic = open_in_bin path in
   Fun.protect
@@ -21,23 +23,20 @@ let load_config profile =
   blocks |> Config.lookup profile |> Config.resolve
 
 let run_once cfg input =
-  match Parser.parse input with
-  | Error msg ->
-      prerr_endline msg;
-      exit 1
-  | Ok cmd ->
-      if Unix.isatty Unix.stdout then
-        print_endline ("λ " ^ Highlight.colorize input ^ "\n");
+  let cmd = Parser.parse input |> or_fail in
 
-      let connection =
-        Connection.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
-          ~database:cfg.database
-      in
-      Fun.protect
-        ~finally:(fun () -> Connection.close connection)
-        (fun () ->
-          Repl.execute (SqlDialect.to_stmt cmd) connection;
-          Connection.read_results connection)
+  if Unix.isatty Unix.stdout then
+    print_endline ("λ " ^ Highlight.colorize input ^ "\n");
+
+  let connection =
+    Connection.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
+      ~database:cfg.database
+  in
+  Fun.protect
+    ~finally:(fun () -> Connection.close connection)
+    (fun () ->
+      Repl.execute_sql (SqlDialect.to_stmt cmd) connection;
+      Connection.read_results connection)
 
 let split_profile = function
   | word :: args when String.length word > 1 && word.[0] = '@' ->

@@ -50,11 +50,18 @@ module MAKE (D : DIALECT) = struct
     | Is -> "IS"
     | In -> "IN"
 
+  let arith_op = function
+    | Add -> "+"
+    | Sub -> "-"
+    | Mul -> "*"
+    | Div -> "/"
+    | Mod -> "%"
+
   let rec query ctx { table; get; where; order; limit } =
     let cols =
       match get with
       | [] -> "*"
-      | entries -> String.concat ", " (idents entries)
+      | entries -> String.concat ", " (List.map (expr ctx) entries)
     in
     let base = Printf.sprintf "SELECT %s FROM %s" cols (D.quote_ident table) in
     let w = Option.map (fun cond -> " WHERE " ^ condition ctx cond) where in
@@ -69,9 +76,18 @@ module MAKE (D : DIALECT) = struct
     base ^ Option.value w ~default:"" ^ Option.value o ~default:""
     ^ Option.value l ~default:""
 
+  and expr ctx = function
+    | Literal v -> bind ctx v
+    | Column col -> D.quote_ident col
+    | Neg ex -> Printf.sprintf "-(%s)" (expr ctx ex)
+    | Arith (op, lhs, rhs) ->
+        let lhs = expr ctx lhs in
+        let rhs = expr ctx rhs in
+        Printf.sprintf "(%s %s %s)" lhs (op |> arith_op) rhs
+
   and condition ctx = function
     | Cmp { columns; op; rhs } -> (
-        let lhs = tuple (idents columns) in
+        let lhs = tuple (List.map (expr ctx) columns) in
         match rhs with
         | Null -> (
             match op with
