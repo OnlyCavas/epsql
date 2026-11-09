@@ -35,6 +35,9 @@ end
 
 module Keyword = struct
   type t =
+    (*explain*)
+    | Explain
+    | Analize
     (*commands*)
     | Select
     | Create
@@ -43,6 +46,7 @@ module Keyword = struct
     | Drop
     | Delete
     | Alter
+    | Truncate
     (*target*)
     | Table
     | Database
@@ -57,7 +61,6 @@ module Keyword = struct
     | Not
     (*alter ops*)
     | Add
-    | Column
     | To
     | Rename
     (*keywords*)
@@ -74,9 +77,18 @@ module Keyword = struct
     | Left
     | Right
     | Cross
+    (*truncate*)
+    | CASCADE
+    | RESTART
+    | IDENTITY
 
   let all =
     [
+      (*explain*)
+      ("explain", Explain);
+      ("ex", Explain);
+      ("analize", Analize);
+      ("pl", Analize);
       (*commands*)
       ("select", Select);
       ("s", Select);
@@ -92,8 +104,8 @@ module Keyword = struct
       ("dp", Drop);
       ("alter", Alter);
       ("a", Alter);
-      ("column", Column);
-      ("c", Column);
+      ("tc", Truncate);
+      ("truncate", Truncate);
       (*target*)
       ("table", Table);
       ("t", Table);
@@ -138,6 +150,12 @@ module Keyword = struct
       ("right", Right);
       ("c", Cross);
       ("cross", Cross);
+      (*truncate*)
+      ("cascade", CASCADE);
+      ("casc", CASCADE);
+      ("restart", RESTART);
+      ("rt", RESTART);
+      ("id", IDENTITY);
     ]
 
   let to_list = all |> List.map (fun (a, _) -> a)
@@ -156,10 +174,7 @@ module Keyword = struct
     List.find_opt expect (candidates s)
 
   let is_keyword s = Option.is_some (of_string s)
-
-  let is_alter_op = function
-    | Add | Column | Drop | Rename | To -> true
-    | _ -> false
+  let is_alter_op = function Add | Drop | Rename | To -> true | _ -> false
 
   let is_join_kind = function
     | Inner | Left | Right | Full | Cross -> true
@@ -765,18 +780,18 @@ and parse_query table toks =
             let join, rest = parse_join toks in
             loop { state with joins = join :: state.joins } rest
         | Some Where ->
-            mark t Modifier;
             ensure_once state.where (start, stop) "duplicate where";
+            mark t Modifier;
             let condition, rest = parse_or rest in
             loop { state with where = Some condition } rest
         | Some Order ->
-            mark t Modifier;
             ensure_once state.order (start, stop) "duplicate order";
+            mark t Modifier;
             let order, rest = parse_order rest in
             loop { state with order = Some order } rest
         | Some Limit -> (
-            mark t Modifier;
             ensure_once state.limit (start, stop) "duplicate limit";
+            mark t Modifier;
             match rest with
             | { tok = Int i; _ } :: rest when i >= 0 ->
                 loop { state with limit = Some i } rest
@@ -912,6 +927,7 @@ let parse_delete pos toks =
         | [] | [ { tok = Eof } ] -> (None, rest)
         | tok :: _ -> fail rest "expected WHERE or end of statement"
       in
+      expect_end rest;
       Delete { table; where }
   | _ -> fail_at pos "unexpected subject, delete supports only table"
 
@@ -961,7 +977,42 @@ let parse_alter pos toks =
       let ops, rest = parse_alter_operation rest in
       expect_end rest;
       Alter { table; ops }
-  | _ -> fail_at pos "alter it's not implemented yet"
+  | _ -> fail_at pos "alter doesn't support databases"
+
+let parse_truncate pos toks =
+  let rec parse_table_targets acc toks =
+    let table, rest =
+      match parse_target ~ignore_table_kw:true toks with
+      | Table table, rest -> (table, rest)
+      | _, rest -> fail rest "truncate doesn't support database"
+    in
+    match rest with
+    | ({ tok = Comma } as t) :: rest ->
+        mark t Punct;
+        parse_table_targets (table :: acc) rest
+    | _ -> (table :: acc |> List.rev, rest)
+  in
+  let tables, rest = parse_table_targets [] toks in
+  let ensure_once state start fmt = if state then parser_error start fmt in
+  let rec loop state = function
+    | ([] | { tok = Eof | R_paren } :: _) as rest -> (state, rest)
+    | ({ tok = Ident word; start; stop } as t) :: rest as toks -> (
+        match word |> Keyword.of_string with
+        | Some CASCADE ->
+            ensure_once state.cascade (start, stop) "cascade is already defined";
+            mark t Command;
+            loop { state with cascade = true } rest
+        | Some RESTART ->
+            ensure_once state.cascade (start, stop)
+              "reset identity is already defined";
+            mark t Command;
+            let rest = expect_keyword IDENTITY rest in
+            loop { state with restart_identity = true } rest
+        | _ -> fail toks "expected CASCADE or RESTART IDENTITY")
+    | toks -> fail toks "expected CASCADE or RESTART IDENTITY"
+  in
+  Truncate
+    (loop { tables; restart_identity = false; cascade = false } rest |> fst)
 
 let rec parse_command ?(expanded = false) = function
   | ({ tok = Ident s; start; stop } as t) :: rest as toks -> (
@@ -977,6 +1028,8 @@ let rec parse_command ?(expanded = false) = function
       | Some Delete -> go (parse_delete (start, stop))
       | Some Drop -> go parse_drop
       | Some Alter -> go (parse_alter (start, stop))
+      | Some Truncate -> go (parse_truncate (start, stop))
+      | Some Explain -> go parse_explain
       | Some _ -> fail_at (start, stop) "'%s' can't start a command" s
       | None when not expanded -> (
           match expand_cluster toks with
@@ -984,6 +1037,24 @@ let rec parse_command ?(expanded = false) = function
           | None -> fail_at (start, stop) "unknown command: %s" s)
       | None -> fail_at (start, stop) "unknown command: %s" s)
   | toks -> fail toks "expected a command"
+
+and parse_explain toks =
+  let guard = function
+    | Select_table _ | Insert _ | Update _ | Delete _ -> true
+    | _ -> false
+  in
+  let analyze, rest =
+    match toks with
+    | ({ tok = Ident word } as t) :: rest
+      when Keyword.of_string word = Some Analize ->
+        mark t Punct;
+        (true, rest)
+    | rest -> (false, rest)
+  in
+  let command = parse_command rest in
+  if not (guard command) then
+    fail toks "explain only supports select, insert, update and delete"
+  else Explain { analyze; command }
 
 let parse_exn input = parse_command (tokenizer input)
 

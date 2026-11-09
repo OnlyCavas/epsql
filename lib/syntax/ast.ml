@@ -75,6 +75,12 @@ type alter_op =
   | Rename_Table of string
   | Rename_Column of { from_ : string; to_ : string }
 
+type truncate = {
+  tables : string list;
+  restart_identity : bool;
+  cascade : bool;
+}
+
 type command =
   | Drop of target
   | Create_database of string
@@ -89,6 +95,8 @@ type command =
     }
   | Delete of { table : string; where : condition option }
   | Alter of { table : string; ops : alter_op list }
+  | Truncate of truncate
+  | Explain of { analyze : bool; command : command }
 
 let type_of_value : value -> Types.t = function
   | String _ -> Types.String
@@ -221,7 +229,7 @@ and show_get = function
         (Printf.sprintf "get (%s)"
            (String.concat ", " (List.map show_select_item cols)))
 
-let string_of_command = function
+let rec string_of_command = function
   | Drop _ -> "drop"
   | Create_database name -> Printf.sprintf "create database with name %s" name
   | Create_table { table; fields; fmt } ->
@@ -246,3 +254,20 @@ let string_of_command = function
       in
       Printf.sprintf "delete table with name %s %s" table where
   | Alter { table; _ } -> Printf.sprintf "alter table with name %s" table
+  | Truncate { tables; restart_identity; cascade } ->
+      let flags =
+        [ (restart_identity, "restart identity"); (cascade, "cascade") ]
+        |> List.filter_map (fun (flag, label) ->
+            if flag then Some label else None)
+      in
+      let suffix =
+        match flags with
+        | [] -> ""
+        | also -> " also " ^ String.concat " and " also
+      in
+      Printf.sprintf "truncate tables with names (%s)%s"
+        (tables |> String.concat ", ")
+        suffix
+  | Explain { analyze; command } ->
+      let analyze = if analyze then "analyze" else "" in
+      Printf.sprintf "explain %s %s" analyze (command |> string_of_command)

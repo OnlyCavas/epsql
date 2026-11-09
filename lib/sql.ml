@@ -160,7 +160,7 @@ module MAKE (D : DIALECT) = struct
         Printf.sprintf "RENAME COLUMN %s TO %s" from_ to_
     | Rename_Table table -> Printf.sprintf "RENAME TO %s" table
 
-  let to_stmt (cmd : Ast.command) =
+  let rec to_stmt (cmd : Ast.command) =
     let ctx = { n = 0; params = [] } in
     let finish sql = { sql; params = ctx.params |> List.rev } in
     match cmd with
@@ -203,6 +203,25 @@ module MAKE (D : DIALECT) = struct
         finish
           (Printf.sprintf "ALTER TABLE %s %s" table
              (List.map alter_operation ops |> String.concat ", "))
+    | Truncate { tables; restart_identity; cascade } ->
+        let flags =
+          [ (restart_identity, "RESTART IDENTITY"); (cascade, "CASCADE") ]
+          |> List.filter_map (fun (flag, label) ->
+              if flag then Some label else None)
+        in
+        finish
+          (Printf.sprintf "TRUNCATE %s %s"
+             (tables |> String.concat ", ")
+             (flags |> String.concat " "))
+    | Explain { analyze; command } ->
+        let inner = to_stmt command in
+        {
+          inner with
+          sql =
+            [ "EXPLAIN"; (if analyze then "ANALYZE" else ""); inner.sql ]
+            |> List.filter (( <> ) "")
+            |> String.concat " ";
+        }
 
   let string_of_stmt { sql } = sql
 end
