@@ -60,7 +60,12 @@ module MAKE (D : DIALECT) = struct
     | Div -> "/"
     | Mod -> "%"
 
-  let kind_of_string = function Inner -> "INNER"
+  let string_of_kind = function
+    | Inner -> "INNER"
+    | Full -> "FULL"
+    | Left -> "LEFT OUTER"
+    | Right -> "RIGHT OUTER"
+    | Cross -> "CROSS"
 
   let rec query ctx { table; get; joins; where; order; limit } =
     let cols =
@@ -71,7 +76,7 @@ module MAKE (D : DIALECT) = struct
     let join =
       List.map
         (fun j ->
-          Printf.sprintf " %s JOIN %s on %s" (j.kind |> kind_of_string)
+          Printf.sprintf " %s JOIN %s on %s" (j.kind |> string_of_kind)
             (j.table |> target_ref)
             (condition ctx j.condition))
         joins

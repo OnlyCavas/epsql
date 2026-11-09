@@ -64,6 +64,10 @@ module Keyword = struct
     | Join
     | On
     | Inner
+    | Full
+    | Left
+    | Right
+    | Cross
 
   let all =
     [
@@ -108,18 +112,38 @@ module Keyword = struct
       ("join", Join);
       ("on", On);
       ("j", Join);
-      ("inner", Inner);
       ("i", Inner);
+      ("inner", Inner);
+      ("f", Full);
+      ("full", Full);
+      ("l", Left);
+      ("left", Left);
+      ("r", Right);
+      ("right", Right);
+      ("c", Cross);
+      ("cross", Cross);
     ]
 
   let to_list = all |> List.map (fun (a, _) -> a)
 
   let to_string k =
-    List.find_map (fun (name, k') -> if k' = k then Some name else None) all
-    |> Option.get
+    all
+    |> List.filter_map (fun (name, k') -> if k' = k then Some name else None)
+    |> List.sort (fun a b -> compare (String.length b) (String.length a))
+    |> List.hd
 
-  let of_string s = List.assoc_opt (String.lowercase_ascii s) all
+  let candidates str =
+    let str = String.lowercase_ascii str in
+    List.filter_map (fun (name, k) -> if name = str then Some k else None) all
+
+  let of_string ?(expect = fun _ -> true) s =
+    List.find_opt expect (candidates s)
+
   let is_keyword s = Option.is_some (of_string s)
+
+  let is_join_kind = function
+    | Inner | Left | Right | Full | Cross -> true
+    | _ -> false
 
   let cluster s =
     let n = String.length s in
@@ -637,6 +661,37 @@ let accept_keyword kw = function
       Some rest
   | _ -> None
 
+let join_kind_of_keyword : Keyword.t -> Ast.join_kind option = function
+  | Inner -> Some Ast.Inner
+  | Full -> Some Ast.Full
+  | Left -> Some Ast.Left
+  | Right -> Some Ast.Right
+  | Cross -> Some Ast.Cross
+  | _ -> None
+
+let parse_join_head : spec list -> Ast.join_kind * spec list = function
+  | ({ tok = Ident kind; start; stop } as k)
+    :: ({ tok = Ident join } as j)
+    :: rest
+    when Keyword.of_string join = Some Join -> (
+      match
+        Option.bind
+          (Keyword.of_string ~expect:Keyword.is_join_kind kind)
+          join_kind_of_keyword
+      with
+      | Some kind ->
+          mark k Punct;
+          mark j Command;
+          (kind, rest)
+      | None ->
+          fail_at (start, stop) "expected a join kind (e.g. inner), got %s" kind
+      )
+  | ({ tok = Ident join } as j) :: rest when Keyword.of_string join = Some Join
+    ->
+      mark j Command;
+      (Ast.Inner, rest)
+  | toks -> fail toks "expected join"
+
 let rec parse_or toks =
   let lhs, toks = parse_and toks in
   match accept_keyword Keyword.Or toks with
@@ -660,6 +715,13 @@ and parse_not toks =
       (Not c, rest)
   | None -> parse_where toks
 
+and parse_join toks =
+  let kind, rest = parse_join_head toks in
+  let table, rest = parse_target_ref ~ignore_table_kw:true rest in
+  let rest = expect_keyword On rest in
+  let condition, rest = parse_or rest in
+  ({ kind; table; condition }, rest)
+
 and parse_query table toks =
   let empty_state () =
     { table; joins = []; get = []; where = None; limit = None; order = None }
@@ -670,25 +732,18 @@ and parse_query table toks =
   let rec loop ?(expand = false) state = function
     | ([] | { tok = Eof | R_paren } :: _) as rest ->
         ({ state with joins = state.joins |> List.rev }, rest)
-    | ({ tok = Ident kind } as k) :: ({ tok = Ident join } as j) :: rest
-      when Keyword.is_keyword kind && Keyword.of_string join = Some Join ->
-        mark k Punct;
-        mark j Command;
-        let table, rest = parse_target_ref ~ignore_table_kw:true rest in
-        let rest = expect_keyword On rest in
-        let condition, rest = parse_or rest in
-        loop
-          {
-            state with
-            joins = { kind = Inner; table; condition } :: state.joins;
-          }
-          rest
+    | { tok = Ident _ } :: j :: rest as toks when is_keyword [ Join ] j ->
+        let join, rest = parse_join toks in
+        loop { state with joins = join :: state.joins } rest
     | ({ tok = Ident word; start; stop } as t) :: rest as toks -> (
         match word |> Keyword.of_string with
         | Some Get ->
             mark t Modifier;
             let attributes, rest = parse_get rest in
             loop { state with get = state.get @ attributes } rest
+        | Some Join ->
+            let join, rest = parse_join toks in
+            loop { state with joins = join :: state.joins } rest
         | Some Where ->
             mark t Modifier;
             ensure_once state.where (start, stop) "duplicate where";
@@ -710,8 +765,9 @@ and parse_query table toks =
             | [] -> fail_at (start, stop) "limit expects a number")
         | _ when not expand -> (
             match expand_cluster toks with
-            | Some toks -> loop state toks
-            | None -> fail_at (start, stop) "expected a modifier")
+            | Some result -> loop ~expand:true state result
+            | None -> fail_at (start, stop) "expected a modifier, got (%s)" word
+            )
         | _ -> fail_at (start, stop) "unknown modifier %s" word)
     | toks -> fail toks "expected a modifier"
   in

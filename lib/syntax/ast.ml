@@ -44,7 +44,7 @@ type condition =
   | Or of condition * condition
   | Not of condition
 
-and join_kind = Inner
+and join_kind = Inner | Full | Left | Right | Cross
 and join = { kind : join_kind; table : table_ref; condition : condition }
 
 and rhs =
