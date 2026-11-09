@@ -69,6 +69,12 @@ type fmt = Json | Pretty
 type 'a fields = (string * 'a) list
 type target = Table of string | Database of string
 
+type alter_op =
+  | Add_Column of (string * Types.t)
+  | Drop_Column of string
+  | Rename_Table of string
+  | Rename_Column of { from_ : string; to_ : string }
+
 type command =
   | Drop of target
   | Create_database of string
@@ -82,6 +88,7 @@ type command =
       fields : value fields;
     }
   | Delete of { table : string; where : condition option }
+  | Alter of { table : string; ops : alter_op list }
 
 let type_of_value : value -> Types.t = function
   | String _ -> Types.String
@@ -238,3 +245,4 @@ let string_of_command = function
         match where with Some w -> w |> show_condition | None -> ""
       in
       Printf.sprintf "delete table with name %s %s" table where
+  | Alter { table; _ } -> Printf.sprintf "alter table with name %s" table

@@ -42,6 +42,7 @@ module Keyword = struct
     | Update
     | Drop
     | Delete
+    | Alter
     (*target*)
     | Table
     | Database
@@ -54,6 +55,11 @@ module Keyword = struct
     | Or
     | And
     | Not
+    (*alter ops*)
+    | Add
+    | Column
+    | To
+    | Rename
     (*keywords*)
     | Set
     | As
@@ -84,6 +90,10 @@ module Keyword = struct
       ("d", Delete);
       ("drop", Drop);
       ("dp", Drop);
+      ("alter", Alter);
+      ("a", Alter);
+      ("column", Column);
+      ("c", Column);
       (*target*)
       ("table", Table);
       ("t", Table);
@@ -102,6 +112,12 @@ module Keyword = struct
       ("limit", Limit);
       ("l", Limit);
       ("in", In);
+      (*alter ops*)
+      ("add", Add);
+      ("a", Add);
+      ("to", To);
+      ("rename", Rename);
+      ("r", Rename);
       (*keywords*)
       ("set", Set);
       ("as", As);
@@ -140,6 +156,10 @@ module Keyword = struct
     List.find_opt expect (candidates s)
 
   let is_keyword s = Option.is_some (of_string s)
+
+  let is_alter_op = function
+    | Add | Column | Drop | Rename | To -> true
+    | _ -> false
 
   let is_join_kind = function
     | Inner | Left | Right | Full | Cross -> true
@@ -895,6 +915,54 @@ let parse_delete pos toks =
       Delete { table; where }
   | _ -> fail_at pos "unexpected subject, delete supports only table"
 
+let parse_alter_operation toks =
+  let rec loop ?(expand = false) acc = function
+    | ([] | { tok = Eof | R_paren } :: _) as rest -> (acc |> List.rev, rest)
+    | ({ tok = Ident word; start; stop } as t) :: rest as toks -> (
+        match Keyword.of_string ~expect:Keyword.is_alter_op word with
+        | Some Rename ->
+            mark t Command;
+            let acc, rest =
+              match rest with
+              | t :: ({ tok = Ident table } as c) :: rest
+                when is_keyword [ To ] t ->
+                  mark t Command;
+                  mark c Target;
+                  (Rename_Table table :: acc, rest)
+              | ({ tok = Ident from_ } as c) :: rest ->
+                  mark c Column;
+                  let rest = expect_keyword To rest in
+                  let to_, rest = parse_name Column rest in
+                  (Rename_Column { from_; to_ } :: acc, rest)
+              | toks -> fail toks "expected TO or a column name"
+            in
+            (acc |> List.rev, rest)
+        | Some Drop ->
+            mark t Command;
+            let name, rest = parse_name Column rest in
+            loop (Drop_Column name :: acc) rest
+        | Some Add ->
+            mark t Command;
+            let col, rest = parse_field Column parse_type rest in
+            loop (Add_Column col :: acc) rest
+        | _ when not expand -> (
+            match expand_cluster toks with
+            | Some cluster -> loop ~expand:true acc cluster
+            | None -> fail_at (start, stop) "expected a modifier, got (%s)" word
+            )
+        | _ -> fail_at (start, stop) "unknown modifier %s" word)
+    | toks -> fail toks "expected a modifier"
+  in
+  loop [] toks
+
+let parse_alter pos toks =
+  match parse_target toks with
+  | Table table, rest ->
+      let ops, rest = parse_alter_operation rest in
+      expect_end rest;
+      Alter { table; ops }
+  | _ -> fail_at pos "alter it's not implemented yet"
+
 let rec parse_command ?(expanded = false) = function
   | ({ tok = Ident s; start; stop } as t) :: rest as toks -> (
       let go f =
@@ -908,6 +976,7 @@ let rec parse_command ?(expanded = false) = function
       | Some Update -> go (parse_update (start, stop))
       | Some Delete -> go (parse_delete (start, stop))
       | Some Drop -> go parse_drop
+      | Some Alter -> go (parse_alter (start, stop))
       | Some _ -> fail_at (start, stop) "'%s' can't start a command" s
       | None when not expanded -> (
           match expand_cluster toks with

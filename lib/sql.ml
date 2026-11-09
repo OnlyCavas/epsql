@@ -151,6 +151,15 @@ module MAKE (D : DIALECT) = struct
         Printf.sprintf "(%s OR %s)" a b
     | Not c -> Printf.sprintf "NOT (%s)" (condition ctx c)
 
+  let field_type = fun (k, v) -> D.quote_ident k ^ " " ^ D.sql_type v
+
+  let alter_operation = function
+    | Add_Column field -> Printf.sprintf "ADD COLUMN %s" (field |> field_type)
+    | Drop_Column field -> Printf.sprintf "DROP COLUMN %s" field
+    | Rename_Column { from_; to_ } ->
+        Printf.sprintf "RENAME COLUMN %s TO %s" from_ to_
+    | Rename_Table table -> Printf.sprintf "RENAME TO %s" table
+
   let to_stmt (cmd : Ast.command) =
     let ctx = { n = 0; params = [] } in
     let finish sql = { sql; params = ctx.params |> List.rev } in
@@ -182,9 +191,7 @@ module MAKE (D : DIALECT) = struct
              (D.quote_ident table) (String.concat ", " cols)
              (String.concat ", " ps))
     | Create_table { table; fields; _ } ->
-        let cols =
-          List.map (fun (k, v) -> D.quote_ident k ^ " " ^ D.sql_type v) fields
-        in
+        let cols = List.map field_type fields in
         finish
           (Printf.sprintf "CREATE TABLE %s (%s)" (D.quote_ident table)
              (String.concat ", " cols))
@@ -192,6 +199,10 @@ module MAKE (D : DIALECT) = struct
         finish ("CREATE DATABASE " ^ D.quote_ident database)
     | Drop (Table t) -> finish ("DROP TABLE " ^ D.quote_ident t)
     | Drop (Database t) -> finish ("DROP DATABASE " ^ D.quote_ident t)
+    | Alter { table; ops } ->
+        finish
+          (Printf.sprintf "ALTER TABLE %s %s" table
+             (List.map alter_operation ops |> String.concat ", "))
 
   let string_of_stmt { sql } = sql
 end
