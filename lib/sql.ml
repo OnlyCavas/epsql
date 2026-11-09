@@ -4,7 +4,7 @@ open Epsql_syntax.Ast
 type stmt = { sql : string; params : Ast.value list }
 
 module type DIALECT = sig
-  val placeholder : int -> string
+  val placeholder : int -> Ast.value -> string
   val quote_ident : string -> string
   val sql_type : Types.t -> string
 end
@@ -12,17 +12,20 @@ end
 let quote s = "\"" ^ String.concat "\"\"" (String.split_on_char '"' s) ^ "\""
 
 module Postgres : DIALECT = struct
-  let placeholder n = "$" ^ string_of_int n
-  let quote_ident = quote
-
-  let sql_type = function
-    | Types.Auto -> "serial"
+  let pg_type = function
+    | Types.Auto | Types.Int -> "BIGINT"
     | Types.String -> "TEXT"
-    | Types.Int -> "INTEGER"
     | Types.Bool -> "BOOLEAN"
     | Types.Float -> "DOUBLE PRECISION"
     | Types.Bytes -> "BYTEA"
     | Types.Time -> "TIMESTAMPTZ"
+
+  let placeholder n = function
+    | Ast.String _ -> Printf.sprintf "$%d" n
+    | value -> Printf.sprintf "$%d::%s" n (Ast.type_of_value value |> pg_type)
+
+  let quote_ident = quote
+  let sql_type = function Types.Auto -> "BIGSERIAL" | t -> pg_type t
 end
 
 module MAKE (D : DIALECT) = struct
@@ -31,7 +34,7 @@ module MAKE (D : DIALECT) = struct
   let bind ctx value =
     ctx.n <- ctx.n + 1;
     ctx.params <- value :: ctx.params;
-    D.placeholder ctx.n
+    D.placeholder ctx.n value
 
   let idents cols = List.map D.quote_ident cols
 
@@ -57,24 +60,36 @@ module MAKE (D : DIALECT) = struct
     | Div -> "/"
     | Mod -> "%"
 
-  let rec query ctx { table; get; where; order; limit } =
+  let kind_of_string = function Inner -> "INNER"
+
+  let rec query ctx { table; get; joins; where; order; limit } =
     let cols =
-      match get with
+      match List.map (select_item ctx) get with
       | [] -> "*"
-      | entries -> String.concat ", " (List.map (select_item ctx) entries)
+      | entries -> String.concat ", " entries
+    in
+    let join =
+      List.map
+        (fun j ->
+          Printf.sprintf " %s JOIN %s on %s" (j.kind |> kind_of_string)
+            (j.table |> target_ref)
+            (condition ctx j.condition))
+        joins
+      |> String.concat ""
     in
     let base = Printf.sprintf "SELECT %s FROM %s" cols (target_ref table) in
-    let w = Option.map (fun cond -> " WHERE " ^ condition ctx cond) where in
-    let o =
+    let where = Option.map (fun cond -> " WHERE " ^ condition ctx cond) where in
+    let order =
       Option.map
         (fun { column; dir } ->
           Printf.sprintf " ORDER BY %s %s" (expression ctx column)
             (match dir with `Asc -> "ASC" | `Desc -> "DESC"))
         order
     in
-    let l = Option.map (Printf.sprintf " LIMIT %d") limit in
-    base ^ Option.value w ~default:"" ^ Option.value o ~default:""
-    ^ Option.value l ~default:""
+    let limit = Option.map (Printf.sprintf " LIMIT %d") limit in
+    let opts value = Option.value value ~default:"" in
+    [ base; join; where |> opts; order |> opts; limit |> opts ]
+    |> String.concat ""
 
   and alias name = " AS " ^ D.quote_ident name
 
@@ -108,13 +123,13 @@ module MAKE (D : DIALECT) = struct
             | Neq -> lhs ^ " IS NOT NULL"
             | _ -> invalid_arg "NULL only works with Is/Eq/Neq")
         | Values values when op = In ->
-            let ps = List.map (bind ctx) values in
+            let ps = List.map (expression ctx) values in
             lhs ^ " IN (" ^ String.concat ", " ps ^ ")"
         | Values values ->
-            let ps = List.map (bind ctx) values in
+            let ps = List.map (expression ctx) values in
             Printf.sprintf "%s %s %s" lhs (op_sql op) (tuple ps)
         | Rows rows ->
-            let row r = tuple (List.map (bind ctx) r) in
+            let row r = tuple (List.map (expression ctx) r) in
             lhs ^ " IN (" ^ String.concat ", " (List.map row rows) ^ ")"
         | Sub { card; query = q } -> (
             let sub = query ctx q in

@@ -35,30 +35,39 @@ end
 
 module Keyword = struct
   type t =
+    (*commands*)
     | Select
     | Create
     | Insert
     | Update
     | Drop
     | Delete
+    (*target*)
     | Table
     | Database
+    (*modifiers*)
     | Get
     | Where
     | Order
     | Limit
     | In
+    | Or
+    | And
+    | Not
+    (*keywords*)
     | Set
     | As
     | Asc
     | Desc
-    | Or
-    | And
-    | Not
     | Null
+    (*join*)
+    | Join
+    | On
+    | Inner
 
   let all =
     [
+      (*commands*)
       ("select", Select);
       ("s", Select);
       ("create", Create);
@@ -71,10 +80,12 @@ module Keyword = struct
       ("d", Delete);
       ("drop", Drop);
       ("dp", Drop);
+      (*target*)
       ("table", Table);
       ("t", Table);
       ("database", Database);
       ("db", Database);
+      (*modifiers*)
       ("where", Where);
       ("w", Where);
       ("get", Get);
@@ -87,11 +98,18 @@ module Keyword = struct
       ("limit", Limit);
       ("l", Limit);
       ("in", In);
+      (*keywords*)
       ("set", Set);
       ("as", As);
       ("asc", Asc);
       ("desc", Desc);
       ("null", Null);
+      (*join*)
+      ("join", Join);
+      ("on", On);
+      ("j", Join);
+      ("inner", Inner);
+      ("i", Inner);
     ]
 
   let to_list = all |> List.map (fun (a, _) -> a)
@@ -139,6 +157,9 @@ type token =
   | Ident of string
   | String of string
   | Int of int
+  | Float of float
+  | Bool of bool
+  | Bytes of string
   | Colon
   | Comma
   | Semicolon
@@ -154,6 +175,9 @@ let string_of_token = function
   | Ident s -> Printf.sprintf "Ident %S" s
   | String s -> Printf.sprintf "String %S" s
   | Int i -> Printf.sprintf "Int %d" i
+  | Float i -> Printf.sprintf "Int %f" i
+  | Bool b -> Printf.sprintf "Bool %b" b
+  | Bytes b -> Printf.sprintf "Bytes %s" b
   | Colon -> "Colon"
   | Comma -> "Comma"
   | L_paren -> "left parent"
@@ -188,6 +212,11 @@ let is_ident_start = function
   | _ -> false
 
 let is_digit = function '0' .. '9' -> true | _ -> false
+
+let is_hex_digit = function
+  | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+  | _ -> false
+
 let is_ident_char c = is_ident_start c || is_digit c
 let span_of = function { start; stop; _ } :: _ -> (start, stop) | [] -> (0, 0)
 let fail toks fmt = parser_error (span_of toks) fmt
@@ -214,6 +243,11 @@ let format_error input ~start ~stop msg =
 
 let keyword_lookups : (string -> token option) list =
   [
+    (fun s ->
+      match String.lowercase_ascii s with
+      | "true" | "t" -> Some (Bool true)
+      | "false" | "f" -> Some (Bool false)
+      | _ -> None);
     (fun s -> Option.map (fun o -> Arith_Op o) (Arith.of_string s));
     (fun s -> Option.map (fun o -> Op o) (Operator.of_string s));
   ]
@@ -222,6 +256,11 @@ let classify_keyword id =
   match List.find_map (fun f -> f id) keyword_lookups with
   | Some tok -> tok
   | None -> Ident id
+
+let bytes_of_hex hex =
+  String.init
+    (String.length hex / 2)
+    (fun i -> Char.chr (int_of_string ("0x" ^ String.sub hex (i * 2) 2)))
 
 let tokenizer str =
   let n = String.length str in
@@ -279,9 +318,18 @@ let tokenizer str =
     | Some ch when is_ident_start ch ->
         let id, next = take_while is_ident_char i in
         emit (classify_keyword id) next
-    | Some c when is_digit c ->
+    | Some '0' when peek (i + 1) = Some 'x' ->
+        let hex, next = take_while is_hex_digit (i + 2) in
+        if hex = "" || String.length hex mod 2 <> 0 then emit Error (i + 1)
+        else emit (Bytes (hex |> bytes_of_hex)) next
+    | Some c when is_digit c -> (
         let digits, next = take_while is_digit i in
-        emit (Int (int_of_string digits)) next
+        match (peek next, peek (next + 1)) with
+        | Some '.', Some d when is_digit d ->
+            let frac, next' = take_while is_digit (next + 1) in
+            emit (Float (float_of_string (digits ^ "." ^ frac))) next'
+        | Some 'f', _ -> emit (Float (float_of_string digits)) (next + 1)
+        | _ -> emit (Int (int_of_string digits)) next)
     | Some c -> emit Error (i + 1)
   in
   go 0 []
@@ -397,9 +445,18 @@ and parse_value = function
   | ({ tok = Ident s | String s; _ } as t) :: rest ->
       mark t Literal;
       (Ast.String s, rest)
+  | ({ tok = Bool b } as t) :: rest ->
+      mark t Punct;
+      (Ast.Bool b, rest)
+  | ({ tok = Float f; _ } as t) :: rest ->
+      mark t Number;
+      (Ast.Float f, rest)
   | ({ tok = Int i; _ } as t) :: rest ->
       mark t Number;
       (Ast.Int i, rest)
+  | ({ tok = Bytes b; _ } as t) :: rest ->
+      mark t Punct;
+      (Ast.Bytes b, rest)
   | toks -> fail toks "expected a value"
 
 let parse_type = function
@@ -425,7 +482,7 @@ and parse_expr_rest lhs = function
   | ({ tok = Arith_Op ((Add | Sub) as op) } as t) :: rest ->
       mark t Punct;
       let rhs, rest = parse_term rest in
-      parse_term_rest (Arith (op, lhs, rhs)) rest
+      parse_expr_rest (Arith (op, lhs, rhs)) rest
   | toks -> (lhs, toks)
 
 and parse_term toks =
@@ -468,7 +525,10 @@ let parse_select_item toks =
       ({ expr; alias = Some alias }, rest)
   | _ -> ({ expr; alias = None }, rest)
 
-let parse_target = function
+let parse_target ?(ignore_table_kw = false) = function
+  | { tok = Ident _ } :: _ as toks when ignore_table_kw ->
+      let name, rest = parse_name Name toks in
+      (Table name, rest)
   | ({ tok = Ident word; start; stop } as t) :: rest -> (
       let finish mk =
         mark t Target;
@@ -481,9 +541,9 @@ let parse_target = function
       | _ -> fail_at (start, stop) "expected table or database, got %s" word)
   | toks -> fail toks "expected table or database"
 
-let parse_target_ref toks =
+let parse_target_ref ?(ignore_table_kw = false) toks =
   let table, rest =
-    match parse_target toks with
+    match parse_target ~ignore_table_kw toks with
     | Table table, rest -> (table, rest)
     | _, rest -> fail rest "expected an table"
   in
@@ -602,14 +662,28 @@ and parse_not toks =
 
 and parse_query table toks =
   let empty_state () =
-    { table; get = []; where = None; limit = None; order = None }
+    { table; joins = []; get = []; where = None; limit = None; order = None }
   in
   let ensure_once state start fmt =
     if Option.is_some state then parser_error start fmt
   in
-  let rec loop state = function
-    | ([] | { tok = Eof | R_paren } :: _) as rest -> (state, rest)
-    | ({ tok = Ident word; start; stop } as t) :: rest -> (
+  let rec loop ?(expand = false) state = function
+    | ([] | { tok = Eof | R_paren } :: _) as rest ->
+        ({ state with joins = state.joins |> List.rev }, rest)
+    | ({ tok = Ident kind } as k) :: ({ tok = Ident join } as j) :: rest
+      when Keyword.is_keyword kind && Keyword.of_string join = Some Join ->
+        mark k Punct;
+        mark j Command;
+        let table, rest = parse_target_ref ~ignore_table_kw:true rest in
+        let rest = expect_keyword On rest in
+        let condition, rest = parse_or rest in
+        loop
+          {
+            state with
+            joins = { kind = Inner; table; condition } :: state.joins;
+          }
+          rest
+    | ({ tok = Ident word; start; stop } as t) :: rest as toks -> (
         match word |> Keyword.of_string with
         | Some Get ->
             mark t Modifier;
@@ -634,23 +708,20 @@ and parse_query table toks =
             | { start; stop } :: _ ->
                 fail_at (start, stop) "limit expects a non-negative integer"
             | [] -> fail_at (start, stop) "limit expects a number")
+        | _ when not expand -> (
+            match expand_cluster toks with
+            | Some toks -> loop state toks
+            | None -> fail_at (start, stop) "expected a modifier")
         | _ -> fail_at (start, stop) "unknown modifier %s" word)
     | toks -> fail toks "expected a modifier"
   in
   loop (empty_state ()) toks
 
 and parse_subquery toks =
-  (* let tok_pos = span_of toks in *)
   let rest = expect_token L_paren toks in
   let rest = expand_head rest in
   let rest = expect_keyword Select rest in
   let table, rest = parse_target_ref rest in
-  (* let table, rest = *)
-  (*   match parse_target rest with *)
-  (*   | Table table, rest -> (table, rest) *)
-  (*   | Database _, _ -> *)
-  (*       fail_at tok_pos "expected a table select rather than a database select" *)
-  (* in *)
   let query, rest = parse_query table rest in
   (query, expect_token R_paren rest)
 
@@ -671,8 +742,8 @@ and parse_rhs ~ncols op toks =
           let card = Option.value card ~default:(card_of_op op) in
           (Sub { card; query }, rest)
       | None, _, false ->
-          let values, rest = parse_values toks in
-          (Values values, rest))
+          let exprs, rest = parse_exprs toks in
+          (Values exprs, rest))
 
 and parse_in ~ncols toks =
   let kw_pos = span_of toks in
@@ -688,9 +759,9 @@ and parse_in ~ncols toks =
         | _ -> fail_at kw_pos "'in' expects a parenthesized list");
         let parse_row =
           if ncols = 1 then fun t ->
-            let v, r = parse_value t in
+            let v, r = parse_expr t in
             ([ v ], r)
-          else parse_values
+          else parse_exprs
         in
         let rows, rest = parse_tuple_of ~what:"row" parse_row toks in
         (Rows rows, rest))

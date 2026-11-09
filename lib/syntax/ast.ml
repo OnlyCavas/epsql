@@ -17,7 +17,15 @@ module Types = struct
 end
 
 type arith_op = Add | Sub | Mul | Div | Mod
-type value = String of string | Int of int
+
+type value =
+  | String of string
+  | Int of int
+  | Bool of bool
+  | Float of float
+  | Bytes of string
+  | Time of float
+
 type cardinality = One | Maybe | Many
 type op = Eq | Neq | Lt | Gt | Lte | Gte | Like | Is | In
 
@@ -36,9 +44,12 @@ type condition =
   | Or of condition * condition
   | Not of condition
 
+and join_kind = Inner
+and join = { kind : join_kind; table : table_ref; condition : condition }
+
 and rhs =
-  | Values of value list
-  | Rows of value list list
+  | Values of expr list
+  | Rows of expr list list
   | Sub of { card : cardinality; query : query }
   | Null
 
@@ -48,6 +59,7 @@ and table_ref = { table : string; alias : string option }
 and query = {
   table : table_ref;
   get : select_item list;
+  joins : join list;
   where : condition option;
   order : order option;
   limit : int option;
@@ -71,7 +83,21 @@ type command =
     }
   | Delete of { table : string; where : condition option }
 
-let show_value = function String str -> str | Int i -> string_of_int i
+let type_of_value : value -> Types.t = function
+  | String _ -> Types.String
+  | Int _ -> Types.Int
+  | Bool _ -> Types.Bool
+  | Float _ -> Types.Float
+  | Bytes _ -> Types.Bytes
+  | Time _ -> Types.Time
+
+let show_value = function
+  | String str -> str
+  | Int i -> string_of_int i
+  | Bool b -> string_of_bool b
+  | Float f -> string_of_float f
+  | Bytes s -> s
+  | Time s -> string_of_float s
 
 let show_fields show_item fields =
   fields
@@ -105,8 +131,7 @@ let show_column_ref = function
   | { qualifier = None; name } -> name
 
 let rec show_expr = function
-  | Literal (Int i) -> string_of_int i
-  | Literal (String s) -> Printf.sprintf "'%s'" s
+  | Literal l -> l |> show_value
   | Column c -> c |> show_column_ref
   | Neg ((Arith _ | Neg _) as e) -> Printf.sprintf "-(%s)" (show_expr e)
   | Neg e -> "-" ^ show_expr e
@@ -168,12 +193,12 @@ and show_condition = function
   | Not c -> Printf.sprintf "not %s" (show_condition c)
 
 and show_rhs = function
-  | Values vs -> "value " ^ show_tuple (List.map show_value vs)
+  | Values vs -> "value " ^ show_tuple (List.map show_expr vs)
   | Sub { card; query } ->
       Printf.sprintf "%s (%s)" (show_card card) (show_query query)
   | Null -> "is null"
   | Rows rows ->
-      let show_row row = show_tuple (List.map show_value row) in
+      let show_row row = show_tuple (List.map show_expr row) in
       "(" ^ String.concat ", " (List.map show_row rows) ^ ")"
 
 and show_alias show_item alias =

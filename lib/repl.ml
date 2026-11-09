@@ -249,9 +249,7 @@ let read_statement history =
   in
   loop ()
 
-let param_of_value : Ast.value -> string option = function
-  | String s -> Some s
-  | Int i -> Some (string_of_int i)
+let param_of_value value = Some (value |> Ast.show_value)
 
 let execute_sql (stmt : Sql.stmt) c =
   match stmt.params with
