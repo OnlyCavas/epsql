@@ -1,6 +1,6 @@
-open Parser
-open Special
-open Ast
+module Ast = Epsql_dsl.Ast
+module Parser = Epsql_dsl.Parser
+module Special = Epsql_dsl.Special
 
 module Style = struct
   type t =
@@ -16,6 +16,9 @@ module Style = struct
     | Column
     | Type
     | Name
+    | Border
+    | Header
+    | Null
 
   let to_ansi = function
     | Plain -> "\027[0m"
@@ -30,11 +33,14 @@ module Style = struct
     | Column -> "\027[36m"
     | Type -> "\027[3;94m"
     | Name -> "\027[1;37m"
+    | Border -> "\027[1;37m"
+    | Header -> "\027[1;36m"
+    | Null -> "\027[2;3m"
 
   let reset = "\027[0m"
 end
 
-let style_of_role (r : role) : Style.t =
+let style_of_role (r : Parser.role) : Style.t =
   match r with
   | Command | Modifier -> Style.Command
   | Target -> Style.Target
@@ -55,18 +61,19 @@ let add_styled buf style s =
 
 let highlight_query input =
   let n = String.length input in
-  match tokenizer input with
-  | exception Syntax_error _ -> input
+  match Parser.tokenizer input with
+  | exception Parser.Syntax_error _ -> input
   | toks ->
-      let marks : (int, int * role) Hashtbl.t = Hashtbl.create 32 in
-      (recorder := fun t r -> Hashtbl.replace marks t.start (t.stop, r));
+      let marks : (int, int * Parser.role) Hashtbl.t = Hashtbl.create 32 in
+      (Parser.recorder := fun t r -> Hashtbl.replace marks t.start (t.stop, r));
       let err =
         Fun.protect
-          ~finally:(fun () -> recorder := fun _ _ -> ())
+          ~finally:(fun () -> Parser.recorder := fun _ _ -> ())
           (fun () ->
             match Parser.parse_exn input with
-            | exception Syntax_error (Lexer_error { pos; _ }) -> Some pos
-            | exception Syntax_error (Parser_error { start; _ }) -> Some start
+            | exception Parser.Syntax_error (Lexer_error { pos; _ }) -> Some pos
+            | exception Parser.Syntax_error (Parser_error { start; _ }) ->
+                Some start
             | _ -> None)
       in
       let buf = Buffer.create (n * 2) in
@@ -76,7 +83,7 @@ let highlight_query input =
         add_styled buf style (String.sub input a (b - a));
         last := b
       in
-      let rec paint_token (t : spec) cur =
+      let rec paint_token (t : Parser.spec) cur =
         let tstop = min t.stop n in
         if cur < tstop then
           match Hashtbl.find_opt marks cur with
@@ -90,7 +97,10 @@ let highlight_query input =
               in
               paint (if bad then Style.Invalid else Style.Plain) cur tstop
       in
-      List.iter (fun t -> if t.tok <> Eof then paint_token t t.start) toks;
+      List.iter
+        (fun (token : Parser.spec) ->
+          if token.tok <> Parser.Eof then paint_token token token.start)
+        toks;
       Buffer.add_substring buf input !last (n - !last);
       Buffer.contents buf
 

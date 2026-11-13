@@ -1,6 +1,10 @@
-open Epsql_syntax
-open Epsql
-open Epsql_wire
+module App = Epsql_app
+module Dsl = Epsql_dsl
+module Ui = Epsql_ui
+module Psql = Epsql_wire.Transport
+module Config = App.Config
+module Repl = App.Repl
+module Sql = Epsql_dsl.Sql
 module SqlDialect = Sql.MAKE (Sql.Postgres)
 
 let or_fail = function Ok x -> x | Error msg -> failwith msg
@@ -23,20 +27,20 @@ let load_config profile =
   blocks |> Config.lookup profile |> Config.resolve
 
 let run_once cfg input =
-  let cmd = Parser.parse input |> or_fail in
+  let cmd = Dsl.Parser.parse input |> or_fail in
 
   if Unix.isatty Unix.stdout then
-    print_endline ("λ " ^ Highlight.colorize input ^ "\n");
+    print_endline ("λ " ^ Ui.Highlight.colorize input);
 
   let connection =
-    Connection.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
+    Psql.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
       ~database:cfg.database
   in
   Fun.protect
-    ~finally:(fun () -> Connection.close connection)
+    ~finally:(fun () -> Psql.close connection)
     (fun () ->
       Repl.execute_sql (SqlDialect.to_stmt cmd) connection;
-      Connection.read_results connection)
+      connection |> Psql.read_response |> Ui.Render.render)
 
 let split_profile = function
   | word :: args when String.length word > 1 && word.[0] = '@' ->

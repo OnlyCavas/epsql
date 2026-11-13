@@ -1,12 +1,11 @@
-open Epsql_syntax
-open Epsql_syntax.Ast
+open Ast
 
 type stmt = { sql : string; params : Ast.value list }
 
 module type DIALECT = sig
   val placeholder : int -> Ast.value -> string
   val quote_ident : string -> string
-  val sql_type : Types.t -> string
+  val sql_type : Ast.Types.t -> string
 end
 
 let quote s = "\"" ^ String.concat "\"\"" (String.split_on_char '"' s) ^ "\""

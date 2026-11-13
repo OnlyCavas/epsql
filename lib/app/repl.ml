@@ -1,6 +1,8 @@
-open Epsql_syntax
-open Epsql_wire
+open Epsql_ui
+module Dsl = Epsql_dsl
+module Sql = Epsql_dsl.Sql
 module SqlDilect = Sql.MAKE (Sql.Postgres)
+module Psql = Epsql_wire.Transport
 
 module KeyDec = struct
   type t =
@@ -180,7 +182,7 @@ let read_statement history =
           | _ -> 0
         in
         let prefix = String.sub l start (!pos - start) in
-        (match Suggestions.complete prefix Parser.Keyword.to_list with
+        (match Suggestions.complete prefix Dsl.Parser.Keyword.to_list with
         | Some word when String.length word > String.length prefix ->
             let rest = String.sub l !pos (String.length l - !pos) in
             line := String.sub l 0 start ^ word ^ rest;
@@ -249,17 +251,17 @@ let read_statement history =
   in
   loop ()
 
-let param_of_value value = Some (value |> Ast.show_value)
+let param_of_value value = Some (value |> Dsl.Ast.show_value)
 
 let execute_sql (stmt : Sql.stmt) c =
   match stmt.params with
-  | [] -> Connection.send_sql c stmt.sql
-  | params -> Connection.send_stmt c stmt.sql (List.map param_of_value params)
+  | [] -> Psql.send_sql c stmt.sql
+  | params -> Psql.send_stmt c stmt.sql (List.map param_of_value params)
 
 type state = {
   history : History.t;
   debug : bool;
-  connection : Wire.t;
+  connection : Psql.t;
   config : Config.t;
 }
 
@@ -270,26 +272,26 @@ let execute (stmt : Sql.stmt) { connection; debug } =
 let switch_database state database =
   let config = { state.config with Config.database } in
   match
-    Connection.connect ~host:config.host ~port:config.port ~user:config.user
+    Psql.connect ~host:config.host ~port:config.port ~user:config.user
       ~database:config.database
   with
   | exception Failure msg ->
       prerr_endline ("could not connect: " ^ msg);
       state
   | connection ->
-      Connection.close state.connection;
+      Psql.close state.connection;
       { state with connection; config }
 
 let rec run state =
   match read_statement state.history with
   | exception End_of_file ->
-      Connection.close state.connection;
+      Psql.close state.connection;
       print_newline ()
   | input -> (
       let state = { state with history = History.add state.history input } in
-      match Special.classify input with
+      match Dsl.Special.classify input with
       | Special Quit ->
-          Connection.close state.connection;
+          Psql.close state.connection;
           ()
       | Special Debug ->
           let state = { state with debug = not state.debug } in
@@ -303,22 +305,23 @@ let rec run state =
           clear_console ();
           run state
       | Special Help ->
-          Special.help () |> print_endline;
+          Dsl.Special.help () |> print_endline;
           run state
       | Unknown name ->
-          Printf.printf "unknown command %c%s (try %ch)\n" Special.prefix name
-            Special.prefix;
+          Printf.printf "unknown command %c%s (try %ch)\n" Dsl.Special.prefix
+            name Dsl.Special.prefix;
           run state
       | Query q ->
-          if state.debug then Parser.print_tokens q;
-          (match Parser.parse input with
+          if state.debug then Dsl.Parser.print_tokens q;
+          (match Dsl.Parser.parse input with
           | Ok cmd ->
               let stmt = SqlDilect.to_stmt cmd in
               execute stmt state;
-              Connection.read_results state.connection
+              state.connection |> Psql.read_response |> Render.render
           | Error msg ->
               msg |> print_endline;
-              Printf.printf "invalid query %s (try %ch)\n" input Special.prefix);
+              Printf.printf "invalid query %s (try %ch)\n" input
+                Dsl.Special.prefix);
           run state)
 
 let run cfg =
@@ -328,6 +331,6 @@ let run cfg =
       debug = false;
       config = cfg;
       connection =
-        Connection.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
+        Psql.connect ~host:cfg.Config.host ~port:cfg.port ~user:cfg.user
           ~database:cfg.database;
     }

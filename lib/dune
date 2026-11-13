@@ -2,4 +2,4 @@
 
 (library
  (name epsql)
- (libraries epsql_syntax epsql_wire))
+ (libraries epsql_app epsql_ui epsql_dsl epsql_wire))

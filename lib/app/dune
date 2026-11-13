@@ -1,0 +1,3 @@
+(library
+ (name epsql_app)
+ (libraries epsql_dsl epsql_wire epsql_ui unix))

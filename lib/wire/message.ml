@@ -1,4 +1,3 @@
-type t = { sock : Unix.file_descr }
 type field = { name : string; type_iod : int }
 
 type error = {
@@ -38,25 +37,6 @@ let get_cstr ptr pos =
   (Bytes.sub_string ptr pos (last - pos), last + 1)
 
 let put_cstr str = str ^ "\000"
-
-let really_read t number =
-  let buf = Bytes.create number in
-  let rec go offset =
-    if offset < number then begin
-      let r = Unix.read t.sock buf offset (number - offset) in
-      if r = 0 then failwith "connection closed by server";
-      go (offset + r)
-    end
-  in
-  go 0;
-  buf
-
-let really_write t bytes =
-  let n = Bytes.length bytes in
-  let rec go offset =
-    if offset < n then go (offset + Unix.write t.sock bytes offset (n - offset))
-  in
-  go 0
 
 let make_int16 n =
   let b = Buffer.create 2 in
