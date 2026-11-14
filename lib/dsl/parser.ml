@@ -37,7 +37,7 @@ module Keyword = struct
   type t =
     (*explain*)
     | Explain
-    | Analize
+    | Analyze
     (*commands*)
     | Select
     | Create
@@ -87,8 +87,8 @@ module Keyword = struct
       (*explain*)
       ("explain", Explain);
       ("ex", Explain);
-      ("analize", Analize);
-      ("pl", Analize);
+      ("analyze", Analyze);
+      ("pl", Analyze);
       (*commands*)
       ("select", Select);
       ("s", Select);
@@ -1046,7 +1046,7 @@ and parse_explain toks =
   let analyze, rest =
     match toks with
     | ({ tok = Ident word } as t) :: rest
-      when Keyword.of_string word = Some Analize ->
+      when Keyword.of_string word = Some Analyze ->
         mark t Punct;
         (true, rest)
     | rest -> (false, rest)
